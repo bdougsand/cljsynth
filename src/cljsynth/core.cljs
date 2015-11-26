@@ -11,27 +11,29 @@
 (defonce app-state
   (atom {:nodes [{:id :osc
                   :node :oscillator
-                  :freq 261.6}]
+                  :freq 261.6
+                  :out [:dest]}]
          :built {}}))
 
 
 (defmulti update-node (on-key :node))
 (defmethod update-node :oscillator
-  [{:keys [freq type wave]} node]
-  )
+  [{:keys [freq type wave] :as arg} osc]
+  (prn arg osc)
+  (when freq
+    (set! (.. osc -frequency -value) freq))
+  (when type
+    (set! (.-type osc) type))
+  (when wave
+    (let [pw (.createPeriodic (.-context osc))])))
 
 (defmulti make-node (on-key :node))
 
 (defmethod make-node :oscillator
-  [{:keys [freq type wave]} ctx]
+  [{:keys [freq type wave] :as node} ctx]
   (let [osc (.createOscillator ctx)]
-    (when freq
-      (set! (.. osc -frequency -value) freq))
-    (when type
-      (set! (.-type osc) type))
-    (when wave
-      (let [pw (.createPeriodic ctx)]
-        ))
+    (update-node node osc)
+    (.start osc (.-currentTime ctx))
     osc))
 
 (defmethod make-node :delay
@@ -92,8 +94,8 @@
 (defn build-nodes [ctx nodes]
   (let [node-map (build-node-map ctx nodes)]
     ;; Connections:
-    (doseq [node nodes, cxn (:out node)
-            :let [from-node (:node node)]]
+    (doseq [[_ node] node-map, cxn (:out node)
+            :let [from-node (::node node)]]
       (if (vector? cxn)
         (let [[to-node-name arg1 arg2] cxn
               to-node (node-map to-node-name)]
@@ -110,7 +112,12 @@
             (.connect from-node
                       (aget to-node (name arg1)))))
 
-        (.connect from-node (node-map cxn))))))
+
+        (.connect from-node (if (= cxn :dest)
+                              (.-destination ctx)
+                              (node-map cxn)))))
+
+    node-map))
 
 (defn oscillator []
   (let [ctx (js/AudioContext.)
@@ -128,30 +135,49 @@
     (render [_]
       (html
        [:div.node.oscillator
-        "Frequency:"
-        [:input {:type "range"
-                 :name "freq"
-                 :value freq
-                 :min 20
-                 :max 14000
-                 :onChange (fn [e]
-                             (om/update! node :freq (.. e -target -value)))}]
-        [:select {:name "type"}
+        [:div.freq
+         "Frequency:"
+         [:input {:type "range"
+                  :name "freq"
+                  :value freq
+                  :min 20
+                  :max 1000
+                  :onChange (fn [e]
+                              (om/update! node :freq (.. e -target -value)))}]
+         [:span.frequency freq "Hz"]]
+        [:select {:name "type"
+                  :value type
+                  :onChange (fn [e]
+                              (om/update! node :type (.. e -target -value)))}
          (for [t ["sine" "square" "sawtooth" "triangle" "custom"]]
-           [:option {:value t} t])]]))))
+           [:option {:value t
+                     } t])]]))))
 
 (defn system-view [app owner]
   (reify
     om/IRender
     (render [_]
       (html [:nodes
+             "Nodes:"
              (for [node (:nodes app)]
                (om/build node-view
                          node
                          {:react-key (:id node)}))]))))
 
 (defn main []
-  (om/root system-view app-state {:target (.getElementById js/document "app")}))
+  (om/root system-view
+           app-state
+           {:target (.getElementById js/document "app")
+            :tx-listen (fn [{:keys [path old-value new-value]} app]
+                         (when (= (first path) :nodes)
+                           (let [[_ n k] path]
+                             (let [desc (-> app :nodes (nth n))
+                                   node (get-in app [:node-map
+                                                     (:id desc)
+                                                     ::node])]
+                               (update-node
+                                (select-keys desc [k :node])
+                                node)))))}))
 
 (defn on-js-reload []
   ;; optionally touch your app-state to force rerendering depending on
@@ -167,5 +193,12 @@
       (catch js/Error exc
         )))
 
+  (swap! app-state
+         (fn [app]
+           (let [ctx (js/AudioContext.)
+                 node-map (build-nodes ctx (:nodes app))]
+             (assoc app
+                    :context ctx
+                    :node-map node-map))))
   #_
   (swap! app-state assoc :context (oscillator)))
