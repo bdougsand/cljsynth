@@ -12,20 +12,33 @@
   (atom {:nodes [{:id :osc
                   :node :oscillator
                   :freq 261.6
-                  :out [:dest]}]
+                  :out [:gainer]}
+
+                 {:id :gainer
+                  :node :gain
+                  :gain 0.5
+                  :out [:dest] }]
          :built {}}))
 
 
 (defmulti update-node (on-key :node))
 (defmethod update-node :oscillator
   [{:keys [freq type wave] :as arg} osc]
-  (prn arg osc)
   (when freq
     (set! (.. osc -frequency -value) freq))
   (when type
     (set! (.-type osc) type))
   (when wave
     (let [pw (.createPeriodic (.-context osc))])))
+
+(defmethod update-node :delay
+  [{:keys [delay]} del]
+  (set! (.. del -delayTime -value) delay))
+
+(defmethod update-node :gain
+  [{:keys [gain]} gnode]
+  (set! (.. gnode -gain -value) gain))
+
 
 (defmulti make-node (on-key :node))
 
@@ -41,9 +54,8 @@
   (.createDelay ctx delay))
 
 (defmethod make-node :gain
-  [{:keys [gain]} ctx]
-  (let [node (.createGain ctx)]
-    (set! (.. node -gain -value) gain)))
+  [n ctx]
+  (update-node n (.createGain ctx)))
 
 (defmethod make-node :panner
   [_ _])
@@ -96,6 +108,7 @@
     ;; Connections:
     (doseq [[_ node] node-map, cxn (:out node)
             :let [from-node (::node node)]]
+      (js/console.log from-node)
       (if (vector? cxn)
         (let [[to-node-name arg1 arg2] cxn
               to-node (node-map to-node-name)]
@@ -153,6 +166,21 @@
            [:option {:value t
                      } t])]]))))
 
+(defmethod node-view :gain
+  [{:keys [gain] :as node} owner]
+  (om/component
+   (html
+    [:div.node.gain
+     [:div.gain
+      "Gain:"
+      [:input {:type "range"
+               :name "gain"
+               :value gain
+               :min 0
+               :max 10
+               :onChange (fn [e]
+                           (om/update! node :gain (.. e -target -value)))}]]])))
+
 (defn system-view [app owner]
   (reify
     om/IRender
@@ -202,3 +230,6 @@
                     :node-map node-map))))
   #_
   (swap! app-state assoc :context (oscillator)))
+
+(defn ^:export init []
+  (on-js-reload))
