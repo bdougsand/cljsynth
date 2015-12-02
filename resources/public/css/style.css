@@ -1,2 +1,20 @@
-/* some style */
+body {
+    font-family: "Avenir", "Lucida Grande", sans-serif;
+}
 
+.node-config {
+    border: 1px solid darkgray;
+    border-radius: 5px;
+    display: inline-block;
+    margin: 0.5em;
+    padding: 1em;
+    padding-top: 2em;
+    position: relative;
+}
+
+.node-name {
+    position: absolute;
+    font-weight: 500;
+    right: 0.5em;
+    top: 0.2em;
+}

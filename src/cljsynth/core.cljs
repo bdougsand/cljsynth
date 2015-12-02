@@ -55,7 +55,9 @@
 
 (defmethod make-node :gain
   [n ctx]
-  (update-node n (.createGain ctx)))
+  (let [gain (.createGain ctx)]
+    (update-node n gain)
+    gain))
 
 (defmethod make-node :panner
   [_ _])
@@ -108,7 +110,6 @@
     ;; Connections:
     (doseq [[_ node] node-map, cxn (:out node)
             :let [from-node (::node node)]]
-      (js/console.log from-node)
       (if (vector? cxn)
         (let [[to-node-name arg1 arg2] cxn
               to-node (node-map to-node-name)]
@@ -128,7 +129,7 @@
 
         (.connect from-node (if (= cxn :dest)
                               (.-destination ctx)
-                              (node-map cxn)))))
+                              (::node (node-map cxn))))))
 
     node-map))
 
@@ -140,6 +141,13 @@
       (.connect (.-destination ctx)))
     ctx))
 
+(defn node-selector [nodes cb]
+  (html
+   [:select
+    (for [node nodes
+          :let [id (name (:id nodes))]]
+      [:option {:value id} id])]))
+
 (defmulti node-view (on-key :node))
 (defmethod node-view :oscillator
   [{:keys [freq type wave] :as node} owner]
@@ -149,7 +157,7 @@
       (html
        [:div.node.oscillator
         [:div.freq
-         "Frequency:"
+         "Frequency: "
          [:input {:type "range"
                   :name "freq"
                   :value freq
@@ -158,13 +166,15 @@
                   :onChange (fn [e]
                               (om/update! node :freq (.. e -target -value)))}]
          [:span.frequency freq "Hz"]]
-        [:select {:name "type"
-                  :value type
-                  :onChange (fn [e]
-                              (om/update! node :type (.. e -target -value)))}
-         (for [t ["sine" "square" "sawtooth" "triangle" "custom"]]
-           [:option {:value t
-                     } t])]]))))
+        [:div.shape
+         "Shape: "
+         [:select {:name "type"
+                   :value type
+                   :onChange (fn [e]
+                               (om/update! node :type (.. e -target -value)))}
+          (for [t ["sine" "square" "sawtooth" "triangle" "custom"]]
+            [:option {:value t
+                      } t])]]]))))
 
 (defmethod node-view :gain
   [{:keys [gain] :as node} owner]
@@ -172,25 +182,28 @@
    (html
     [:div.node.gain
      [:div.gain
-      "Gain:"
+      "Gain: "
       [:input {:type "range"
                :name "gain"
                :value gain
                :min 0
                :max 10
+               :step 0.1
                :onChange (fn [e]
-                           (om/update! node :gain (.. e -target -value)))}]]])))
+                           (om/update! node :gain (.. e -target -value)))}]
+      [:span.gain gain "×"]]])))
 
 (defn system-view [app owner]
   (reify
     om/IRender
     (render [_]
       (html [:nodes
-             "Nodes:"
              (for [node (:nodes app)]
-               (om/build node-view
-                         node
-                         {:react-key (:id node)}))]))))
+               [:div.node-config
+                [:div.node-name (name (:id node))]
+                (om/build node-view
+                          node
+                          {:react-key (:id node)})])]))))
 
 (defn main []
   (om/root system-view
@@ -207,19 +220,16 @@
                                 (select-keys desc [k :node])
                                 node)))))}))
 
+
 (defn on-js-reload []
   ;; optionally touch your app-state to force rerendering depending on
   ;; your application
   ;; (swap! app-state update-in [:__figwheel_counter] inc)
   (main)
   (when-let [ctx (:context @app-state)]
-    (try
-      (doto ctx
-        (.suspend)
-        (.close))
-
-      (catch js/Error exc
-        )))
+    (doto ctx
+      (.suspend)
+      (.close)))
 
   (swap! app-state
          (fn [app]
