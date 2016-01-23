@@ -1,15 +1,20 @@
 (ns cljsynth.core
-  (:require [om.core :as om :include-macros true]
-            [sablono.core :as html :refer-macros [html]]))
+  (:require [goog.dom :as gdom]
+            [om.core :as om]
+            [clojure.string :as str]
+            [sablono.core :as html :refer-macros [html]]
+
+            [cljsynth.build-patches :refer [update-node make-node]]
+            [cljsynth.state :as state]
+            [cljsynth.visualize :as v]))
 
 (enable-console-print!)
 
-(defn on-key [k]
-  (fn [x & _]
-    (k x)))
-
 (defonce app-state
-  (atom {:nodes [{:id :osc
+  (atom {
+         ;; Pure data representation of the nodes in the system and their
+         ;; relationships.
+         :nodes [{:id :osc
                   :node :oscillator
                   :freq 261.6
                   :out [:gainer]}
@@ -18,84 +23,12 @@
                   :node :gain
                   :gain 0.5
                   :out [:dest] }]
-         :built {}}))
+         ;; Stores the constructed nodes
+         :node-map {}}))
 
-
-(defmulti update-node (on-key :node))
-(defmethod update-node :oscillator
-  [{:keys [freq type wave] :as arg} osc]
-  (when freq
-    (set! (.. osc -frequency -value) freq))
-  (when type
-    (set! (.-type osc) type))
-  (when wave
-    (let [pw (.createPeriodic (.-context osc))])))
-
-(defmethod update-node :delay
-  [{:keys [delay]} del]
-  (set! (.. del -delayTime -value) delay))
-
-(defmethod update-node :gain
-  [{:keys [gain]} gnode]
-  (set! (.. gnode -gain -value) gain))
-
-
-(defmulti make-node (on-key :node))
-
-(defmethod make-node :oscillator
-  [{:keys [freq type wave] :as node} ctx]
-  (let [osc (.createOscillator ctx)]
-    (update-node node osc)
-    (.start osc (.-currentTime ctx))
-    osc))
-
-(defmethod make-node :delay
-  [{:keys [delay]} ctx]
-  (.createDelay ctx delay))
-
-(defmethod make-node :gain
-  [n ctx]
-  (let [gain (.createGain ctx)]
-    (update-node n gain)
-    gain))
-
-(defmethod make-node :panner
-  [_ _])
-
-(defmethod make-node :splitter
-  [{:keys [channels]
-    :or {channels 2}} ctx]
-  (.createChannelSplitter ctx channels))
-
-(defmethod make-node :merger
-  [{:keys [channels] :or {channels 2}} ctx]
-  (.createChannelMerger ctx channels))
-
-(defmethod make-node :script
-  [{:keys [process size in out]
-    :or {size 4096
-         in 1
-         out 1}} ctx]
-  (let [node (.createScriptProcessor ctx size in out)]
-    (set! (.-onaudioprocess node)
-          (fn [event]
-            (process (.-inputBuffer event)
-                     (.-outputBuffer event))))
-    node))
-
-(defmethod make-node :convolver
-  [{:keys []} ctx]
-  )
-
-(defmethod make-node :biquad
-  [{:keys [detune freq q type]} ctx]
-  (let [quad (.createBiquadFilter ctx)]
-    (set! (.-type quad) type)
-    (when q (set! (.. quad -Q -value) q))
-    (when freq (set! (.. quad -frequency -value) freq))
-    (when detune (set! (.. quad -detune -value) detune))))
-
-
+(def node-ids
+  (memoize (fn node-ids [nodes]
+             (into #{} (map :id) nodes))))
 
 (defn build-node-map [ctx nodes]
   (into {} (map (fn [node]
@@ -104,9 +37,15 @@
                           ::node (make-node node ctx))]))
         nodes))
 
-;; TODO: How to specify -destination?
+(defn add-analyzer [ctx node-map]
+  (assoc node-map
+         ::analyzer (let [node (doto (.createAnalyser ctx)
+                                 (.connect (.-destination ctx)))]
+                      {::node node
+                       :render (v/make-render-fn node)})))
+
 (defn build-nodes [ctx nodes]
-  (let [node-map (build-node-map ctx nodes)]
+  (let [node-map (add-analyzer ctx (build-node-map ctx nodes))]
     ;; Connections:
     (doseq [[_ node] node-map, cxn (:out node)
             :let [from-node (::node node)]]
@@ -126,20 +65,11 @@
             (.connect from-node
                       (aget to-node (name arg1)))))
 
-
         (.connect from-node (if (= cxn :dest)
-                              (.-destination ctx)
+                              (-> node-map ::analyzer ::node)
                               (::node (node-map cxn))))))
 
     node-map))
-
-(defn oscillator []
-  (let [ctx (js/AudioContext.)
-        osc (.createOscillator ctx)]
-    (doto osc
-      (.start (.-currentTime ctx))
-      (.connect (.-destination ctx)))
-    ctx))
 
 (defn node-selector [nodes cb]
   (html
@@ -147,6 +77,10 @@
     (for [node nodes
           :let [id (name (:id nodes))]]
       [:option {:value id} id])]))
+
+
+(defn on-key [k]
+  (fn [x & _] (k x)))
 
 (defmulti node-view (on-key :node))
 (defmethod node-view :oscillator
@@ -193,17 +127,46 @@
                            (om/update! node :gain (.. e -target -value)))}]
       [:span.gain gain "×"]]])))
 
+(defn visualizer-view [analyzer owner]
+  (reify
+    om/IDidMount
+    (did-mount [_]
+      (let [node (om/get-node owner)
+            {:keys [render]} analyzer]
+        (when render
+          (js/requestAnimationFrame #(render node)))))
+
+    om/IRender
+    (render [_]
+      (html
+       [:canvas {:width 300 :height 200}]))))
+
 (defn system-view [app owner]
   (reify
     om/IRender
     (render [_]
-      (html [:nodes
-             (for [node (:nodes app)]
-               [:div.node-config
-                [:div.node-name (name (:id node))]
-                (om/build node-view
-                          node
-                          {:react-key (:id node)})])]))))
+      (html
+       [:app
+        [:nodes
+         (for [node (:nodes app)]
+           [:div.node-config
+            [:div.node-head
+             [:div.node-name (name (:id node))]]
+            (om/build node-view
+                      node
+                      {:react-key (:id node)})
+            (when-let [out (:out node)]
+              (str "Out: " (str/join "," out)))])]
+        [:div.visualizer
+         (om/build visualizer-view (-> app :node-map ::analyzer))]
+        [:form.system-controls
+         {:onSubmit (fn [e]
+                      (om/transact! app state/add-new :oscillator))}
+         [:select {:name "node_type"}
+          (for [nt [:oscillator :convolver :gain :delay]]
+            [:option {:value (name nt)}
+             (str/capitalize (name nt))])]
+         [:button "Add"]]]))))
 
 (defn main []
   (om/root system-view
@@ -230,7 +193,6 @@
     (doto ctx
       (.suspend)
       (.close)))
-
   (swap! app-state
          (fn [app]
            (let [ctx (js/AudioContext.)
@@ -242,4 +204,4 @@
   (swap! app-state assoc :context (oscillator)))
 
 (defn ^:export init []
-  (on-js-reload))
+  (main))

@@ -8,13 +8,22 @@ body {
     display: inline-block;
     margin: 0.5em;
     padding: 1em;
-    padding-top: 2em;
+    padding-top: 2.5em;
     position: relative;
+    width: 300px;
+}
+
+.node-head {
+    background-color: steelblue;
+    color: white;
+    text-align: right;
+    padding: 0.2em;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
 }
 
 .node-name {
-    position: absolute;
     font-weight: 500;
-    right: 0.5em;
-    top: 0.2em;
 }
